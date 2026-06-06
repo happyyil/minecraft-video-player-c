@@ -14,6 +14,15 @@ from .res.subtitle import generate_subtitle_init_mcfunction
 from .subtitle_utils import extract_and_parse_subtitles_from_video, load_subtitles_from_file
 from .video_utils import process_frames_from_video
 
+try:
+    from ._cvp.cvp_bridge import is_cvp_available, process_frames_with_cvp
+except ImportError:
+    def is_cvp_available() -> bool:
+        return False
+
+    def process_frames_with_cvp(*args, **kwargs):
+        return None
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Minecraft Video Player Generator")
     parser.add_argument("video", help="Path to the video file")
@@ -70,6 +79,13 @@ if __name__ == "__main__":
         help="Number of worker threads to use for processing",
     )
 
+    # C tiler options
+    parser.add_argument(
+        "--no-cvp",
+        action="store_true",
+        help="Disable the C frame_tiler fast path and force pure-Python processing",
+    )
+
     # FFmpeg options
     parser.add_argument(
         "--ffmpeg-exec",
@@ -90,6 +106,7 @@ if __name__ == "__main__":
     no_resourcepack = args.no_resourcepack
     output_base = args.output
     workers = args.workers
+    no_cvp = args.no_cvp
     ffmpeg_exec = args.ffmpeg_exec
     ffprobe_exec = args.ffprobe_exec
 
@@ -130,15 +147,42 @@ if __name__ == "__main__":
         resourcepack_name, template_path="template/resourcepack", mode=mode
     ) as resourcepack:
         # handle video frames
-        meta = process_frames_from_video(
-            video_path=video_file,
-            output_size=target_size,
-            output_fps=target_fps,
-            callback=partial(processing_callback, resourcepack=resourcepack),
-            max_workers=workers,
-            prefer_ffmpeg=prefer_ffmpeg,
-            ffmpeg_exec_path=ffmpeg_exec,
-        )
+        use_cvp = not no_cvp and is_cvp_available()
+        meta = None
+
+        if use_cvp:
+            print("[Main] Using C frame_tiler fast path")
+            with TemporaryDirectory() as tmpdir:
+                meta = process_frames_with_cvp(
+                    video_path=video_file,
+                    output_dir=tmpdir,
+                    output_size=target_size,
+                    output_fps=target_fps,
+                    tile_size=256,
+                    max_workers=workers,
+                    ffmpeg_exec_path=ffmpeg_exec,
+                )
+                if meta is None:
+                    print("[Main] C frame_tiler failed, falling back to Python pipeline")
+                    use_cvp = False
+                else:
+                    # Bulk import generated PNGs into resourcepack
+                    for filename in os.listdir(tmpdir):
+                        if filename.endswith(".png"):
+                            src = os.path.join(tmpdir, filename)
+                            dst = f"assets/video/textures/frame/{filename}"
+                            resourcepack.write_file_from_disk(dst, src)
+
+        if not use_cvp:
+            meta = process_frames_from_video(
+                video_path=video_file,
+                output_size=target_size,
+                output_fps=target_fps,
+                callback=partial(processing_callback, resourcepack=resourcepack),
+                max_workers=workers,
+                prefer_ffmpeg=prefer_ffmpeg,
+                ffmpeg_exec_path=ffmpeg_exec,
+            )
         frame_func = generate_frame_related(meta, resourcepack)
         init_cmds = [frame_func["init"]]
 

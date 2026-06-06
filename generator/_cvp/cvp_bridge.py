@@ -4,25 +4,16 @@ cvp_bridge.py — Bridge between Python and the C frame_tiler program.
 When frame_tiler.exe is compiled and available, this module uses it for fast
 frame extraction, tiling, and PNG encoding. Otherwise, it falls back to the
 pure Python pipeline.
-
-Usage in video_utils.py:
-    from .cvp_bridge import process_frames
-    meta = process_frames(video_path, output_size, output_fps, callback, ...)
 """
 
 import json
 import os
 import subprocess
-import sys
-from typing import Callable, Optional, Tuple
-
-# Types from video_utils
-FrameData = "cv2.typing.MatLike"
-FrameIndex = int
-TimestampSec = float
+from typing import Optional, Tuple
 
 # Try to find the compiled frame_tiler executable
 _FRAME_TILER_PATH = None
+
 
 def _find_frame_tiler() -> Optional[str]:
     """Find the compiled frame_tiler executable."""
@@ -57,8 +48,6 @@ def _find_frame_tiler() -> Optional[str]:
     return None
 
 
-HAS_CVP = False
-
 def _check_cvp_available() -> bool:
     """Check if the C frame_tiler is available."""
     return _find_frame_tiler() is not None
@@ -70,6 +59,7 @@ def process_frames_with_cvp(
     output_size: Optional[Tuple[int, int]],
     output_fps: Optional[float],
     tile_size: int = 256,
+    max_workers: int = 16,
     ffmpeg_exec_path: Optional[str] = None,
 ) -> Optional[dict]:
     """
@@ -84,6 +74,9 @@ def process_frames_with_cvp(
     target_h = output_size[1] if output_size else 0
     target_fps = output_fps or 0.0
 
+    # CLI args must match C main() expectation:
+    # argv[1]=video_path, [2]=output_dir, [3]=width, [4]=height,
+    # [5]=fps, [6]=tile_size, [7]=workers, [8]=ffmpeg_path
     cmd = [
         tiler_path,
         video_path,
@@ -92,6 +85,7 @@ def process_frames_with_cvp(
         str(target_h),
         str(target_fps),
         str(tile_size),
+        str(max_workers),
     ]
 
     if ffmpeg_exec_path:
